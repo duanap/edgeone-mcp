@@ -75,3 +75,7 @@ pnpm test
 ```
 
 Tests use fake clients and temporary credentials; they do not call live EdgeOne write APIs.
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
