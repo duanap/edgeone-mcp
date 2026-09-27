@@ -96,6 +96,7 @@ test('reorder requires the complete current rule set and cache purge stays insid
   const { client } = zoneClient([{ ZoneId: 'zone-one', ZoneName: 'one.example', Status: 'active' }], {
     async DescribeL7AccRules(request) { calls.push(['read-rules', request]); return { Rules: [{ RuleId: 'r1' }, { RuleId: 'r2' }] }; },
     async ModifyL7AccRulePriority(request) { calls.push(['order', request]); return {}; },
+    async DescribeContentQuota(request) { calls.push(['quota', request]); return { PurgeQuota: [{ Type: 'purge_url', Batch: 500, Daily: 1000, DailyAvailable: 999 }] }; },
     async CreatePurgeTask(request) { calls.push(['purge', request]); return { JobId: 'job-1' }; },
   });
   await api.reorderL7Rules(client, 'zone-one', ['r2', 'r1']);
@@ -108,10 +109,76 @@ test('reorder requires the complete current rule set and cache purge stays insid
   assert.deepEqual(calls.find(([name]) => name === 'purge')[1], {
     ZoneId: 'zone-one', Type: 'purge_url', Targets: ['https://www.one.example/app.css'],
   });
+  assert.deepEqual(calls.find(([name]) => name === 'quota')[1], { ZoneId: 'zone-one' });
   await assert.rejects(api.reorderL7Rules(client, 'zone-one', ['r1']), /every current/i);
   await assert.rejects(api.createCachePurge(client, 'zone-one', {
     type: 'purge_url', targets: ['https://other.example/app.css'],
   }), /outside the selected Zone/i);
+});
+
+test('getContentQuota returns only free-tier purge types and safe quota fields', async () => {
+  assert.equal(typeof api.getContentQuota, 'function', 'content quota reader implementation is missing');
+  const { client, calls } = zoneClient([{ ZoneId: 'zone-one', ZoneName: 'one.example', Status: 'active' }], {
+    async DescribeContentQuota(request) {
+      calls.push(['quota', request]);
+      return {
+        PurgeQuota: [
+          { Type: 'purge_url', Batch: 500, Daily: 1000, DailyAvailable: 700, Secret: 'omit' },
+          { Type: 'purge_prefix', Batch: 50, Daily: 50, DailyAvailable: 40 },
+          { Type: 'purge_host', Batch: 50, Daily: 50, DailyAvailable: 30 },
+          { Type: 'purge_all', Batch: 1, Daily: 10, DailyAvailable: 9 },
+          { Type: 'purge_cache_tag', Batch: 50, Daily: 15000, DailyAvailable: 12000 },
+        ],
+        PrefetchQuota: [{ Type: 'prefetch_url', Batch: 0, Daily: 0, DailyAvailable: 0 }],
+        RequestId: 'not-for-clients',
+      };
+    },
+  });
+
+  const result = await api.getContentQuota(client, 'zone-one');
+  assert.deepEqual(calls.find(([name]) => name === 'quota')[1], { ZoneId: 'zone-one' });
+  assert.deepEqual(result, {
+    ZoneId: 'zone-one',
+    ZoneName: 'one.example',
+    PurgeQuota: [
+      { Type: 'purge_url', Batch: 500, Daily: 1000, DailyAvailable: 700 },
+      { Type: 'purge_prefix', Batch: 50, Daily: 50, DailyAvailable: 40 },
+      { Type: 'purge_host', Batch: 50, Daily: 50, DailyAvailable: 30 },
+      { Type: 'purge_all', Batch: 1, Daily: 10, DailyAvailable: 9 },
+    ],
+  });
+});
+
+test('free-tier cache purge rejects Cache-Tag and requests above returned quota', async () => {
+  const calls = [];
+  const { client } = zoneClient([{ ZoneId: 'zone-one', ZoneName: 'one.example', Status: 'active' }], {
+    async DescribeContentQuota(request) {
+      calls.push(['quota', request]);
+      return { PurgeQuota: [{ Type: 'purge_url', Batch: 1, Daily: 2, DailyAvailable: 1 }] };
+    },
+    async CreatePurgeTask(request) { calls.push(['purge', request]); return { JobId: 'job-1' }; },
+  });
+
+  await assert.rejects(api.createCachePurge(client, 'zone-one', {
+    type: 'purge_cache_tag', targets: ['static-v1'],
+  }), /not supported in free-tier mode/i);
+  await assert.rejects(api.createCachePurge(client, 'zone-one', {
+    type: 'purge_url', targets: ['https://one.example/a.css', 'https://one.example/b.css'],
+  }), /quota/i);
+  assert.equal(calls.some(([name]) => name === 'purge'), false);
+});
+
+test('free-tier cache purge fails closed when the selected type has no returned quota', async () => {
+  const calls = [];
+  const { client } = zoneClient([{ ZoneId: 'zone-one', ZoneName: 'one.example', Status: 'active' }], {
+    async DescribeContentQuota(request) { calls.push(['quota', request]); return { PurgeQuota: [] }; },
+    async CreatePurgeTask(request) { calls.push(['purge', request]); return { JobId: 'job-1' }; },
+  });
+
+  await assert.rejects(api.createCachePurge(client, 'zone-one', {
+    type: 'purge_url', targets: ['https://one.example/a.css'],
+  }), /no free-tier quota/i);
+  assert.equal(calls.some(([name]) => name === 'purge'), false);
 });
 
 test('listPurgeTasks filters by a Zone and job ID and returns safe task fields only', async () => {

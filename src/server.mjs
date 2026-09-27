@@ -8,6 +8,7 @@ import {
   createL7Rule,
   createTeoClient,
   deleteL7Rules,
+  getContentQuota,
   listAuthorizedZones,
   listPurgeTasks,
   modifyL7Rule,
@@ -94,10 +95,10 @@ export function createServer({ client = createTeoClient() } = {}) {
 
   server.registerTool('edgeone_purge_cache', {
     title: 'Purge EdgeOne Cache',
-    description: 'Creates a cache purge task within one verified Zone. purge_all affects the entire selected Zone; obtain explicit user approval for every purge, especially purge_all.',
+    description: 'Creates a free-tier supported cache purge task within one verified Zone after checking current Tencent Cloud quotas. Cache-Tag purge is not available in free-tier mode. purge_all affects the entire selected Zone; obtain explicit user approval for every purge, especially purge_all.',
     inputSchema: {
       zoneId: zoneIdSchema,
-      type: z.enum(['purge_url', 'purge_prefix', 'purge_host', 'purge_all', 'purge_cache_tag']),
+      type: z.enum(['purge_url', 'purge_prefix', 'purge_host', 'purge_all']),
       targets: z.array(z.string().min(1)).max(100).optional(),
       method: z.enum(['invalidate', 'delete']).optional(),
     },
@@ -115,6 +116,13 @@ export function createServer({ client = createTeoClient() } = {}) {
     },
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, responseFor(({ zoneId, jobId, startTime, endTime }) => listPurgeTasks(client, zoneId, { jobId, startTime, endTime })));
+
+  server.registerTool('edgeone_get_content_quota', {
+    title: 'Get EdgeOne Content Quota',
+    description: 'Read current free-tier cache purge batch and daily quotas for one verified Zone. Cache-Tag purge and URL prefetch are not exposed in free-tier mode.',
+    inputSchema: { zoneId: zoneIdSchema },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  }, responseFor(({ zoneId }) => getContentQuota(client, zoneId)));
 
   return server;
 }

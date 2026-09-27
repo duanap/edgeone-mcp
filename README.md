@@ -13,7 +13,7 @@
 
 建议为此服务创建专用 CAM 身份，并只授予实际需要的权限。不要使用腾讯云主账号密钥。服务可能调用的 API 权限包括：
 
-`teo:DescribeZones`、`teo:DescribeL7AccRules`、`teo:CreateL7AccRules`、`teo:ModifyL7AccRule`、`teo:DeleteL7AccRules`、`teo:ModifyL7AccRulePriority`、`teo:CreatePurgeTask`、`teo:DescribePurgeTasks`。
+`teo:DescribeZones`、`teo:DescribeL7AccRules`、`teo:CreateL7AccRules`、`teo:ModifyL7AccRule`、`teo:DeleteL7AccRules`、`teo:ModifyL7AccRulePriority`、`teo:DescribeContentQuota`、`teo:CreatePurgeTask`、`teo:DescribePurgeTasks`。
 
 ## 安装
 
@@ -89,18 +89,18 @@ MCP 加载后，先调用 `edgeone_list_zones` 查看当前身份有权限访问
 | `edgeone_reorder_l7_rules` | 调整该 Zone 全部规则的执行顺序 | `zoneId`、`ruleIds`（按期望顺序列出全部规则 ID） |
 | `edgeone_purge_cache` | 在指定 Zone 创建缓存清理任务 | `zoneId`、`type`，以及按类型需要的 `targets`；部分类型可选 `method` |
 | `edgeone_list_purge_tasks` | 查询缓存清理任务 | `zoneId`，以及 `jobId` 或 `startTime` 和 `endTime` |
+| `edgeone_get_content_quota` | 查询免费版支持的缓存清理额度 | `zoneId` |
 
 `rule` 应使用腾讯云 TEO 七层规则 API 所需的规则对象。创建或修改时请先读取当前规则，并依据腾讯云 API 对应字段提供完整、准确的规则内容。
 
-缓存清理支持以下 `type`：
+免费版模式下，缓存清理只支持以下 `type`。每次提交前，服务会通过 `DescribeContentQuota` 查询该 Zone 当前额度，并在请求超过单次额度、日剩余额度或类型没有可用配额时拒绝提交。额度会随套餐、站点和使用情况变化，因此以接口实时返回值为准。
 
 - `purge_url`：清理指定 URL，`targets` 为完整的 `http` 或 `https` URL。
 - `purge_prefix`：清理指定 URL 前缀，`targets` 为完整 URL。
 - `purge_host`：清理指定主机，`targets` 为主机名。
-- `purge_cache_tag`：按缓存标签清理，`targets` 为标签。
 - `purge_all`：清理整个 Zone，不需要 `targets`。
 
-`targets` 最多 100 项。`method` 可设为 `invalidate` 或 `delete`，适用于 `purge_prefix`、`purge_host` 和 `purge_all`。查询任务时，`jobId` 与 `startTime`/`endTime` 二选一；时间范围必须有效且开始时间早于结束时间。
+免费版不支持 Cache-Tag 清理或 URL 预热。查询 `edgeone_get_content_quota` 可查看清理类型、单次上限、每日上限和每日剩余额度。`targets` 最多 100 项；`method` 可设为 `invalidate` 或 `delete`，适用于 `purge_prefix`、`purge_host` 和 `purge_all`。查询任务时，`jobId` 与 `startTime`/`endTime` 二选一；时间范围必须有效且开始时间早于结束时间。
 
 ## 开发与测试
 

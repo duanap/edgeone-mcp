@@ -7,7 +7,7 @@ const SENSITIVE_KEY = /secret|token|password|authorization|cookie|credential|pri
 const SENSITIVE_HEADER = /secret|token|password|authorization|cookie|credential|key/i;
 const SENSITIVE_VALUE_KEY = /^(?:value|values|headervalue|headervalues)$/i;
 const ZONE_ID_PATTERN = /^zone-[A-Za-z0-9-]+$/;
-const PURGE_TYPES = new Set(['purge_url', 'purge_prefix', 'purge_host', 'purge_all', 'purge_cache_tag']);
+const FREE_TIER_PURGE_TYPES = new Set(['purge_url', 'purge_prefix', 'purge_host', 'purge_all']);
 const ZONE_FIELDS = ['ZoneId', 'ZoneName', 'Status', 'ActiveStatus', 'Type', 'Paused', 'CnameStatus'];
 
 function localError(code, message) {
@@ -152,6 +152,30 @@ export async function listZoneRules(client, zoneId) {
   return (await readZoneRules(client, zoneId)).rules;
 }
 
+function freeTierPurgeQuotas(response) {
+  return (Array.isArray(response?.PurgeQuota) ? response.PurgeQuota : [])
+    .filter((quota) => FREE_TIER_PURGE_TYPES.has(quota?.Type))
+    .map((quota) => Object.fromEntries(
+      ['Type', 'Batch', 'Daily', 'DailyAvailable']
+        .filter((key) => quota[key] !== undefined && quota[key] !== null)
+        .map((key) => [key, quota[key]]),
+    ));
+}
+
+async function readContentQuota(client, zone) {
+  const response = await client.DescribeContentQuota({ ZoneId: zone.ZoneId });
+  return {
+    ZoneId: zone.ZoneId,
+    ZoneName: zone.ZoneName,
+    PurgeQuota: freeTierPurgeQuotas(response),
+  };
+}
+
+export async function getContentQuota(client, zoneId) {
+  const zone = await resolveAuthorizedZone(client, zoneId);
+  return readContentQuota(client, zone);
+}
+
 export async function createL7Rule(client, zoneId, rule) {
   const zone = await resolveAuthorizedZone(client, zoneId);
   const checkedRule = requireRule(rule, { allowRuleId: false });
@@ -220,7 +244,10 @@ function cacheHost(target, type) {
 
 export async function createCachePurge(client, zoneId, { type, targets, method = 'invalidate' }) {
   const zone = await resolveAuthorizedZone(client, zoneId);
-  if (!PURGE_TYPES.has(type)) throw localError('InvalidPurgeType', 'Unsupported cache purge type.');
+  if (!FREE_TIER_PURGE_TYPES.has(type)) {
+    const reason = type === 'purge_cache_tag' ? 'purge_cache_tag is not supported in free-tier mode.' : 'Unsupported cache purge type.';
+    throw localError('InvalidPurgeType', reason);
+  }
   if (method !== 'invalidate' && method !== 'delete') throw localError('InvalidPurgeMethod', 'Purge method must be invalidate or delete.');
 
   let normalizedTargets;
@@ -230,13 +257,7 @@ export async function createCachePurge(client, zoneId, { type, targets, method =
     if (!Array.isArray(targets) || targets.length < 1 || targets.length > 100) {
       throw localError('InvalidCacheTarget', 'Provide 1-100 targets for this purge type.');
     }
-    normalizedTargets = targets.map((target) => {
-      if (type === 'purge_cache_tag') {
-        if (typeof target !== 'string' || !target.trim() || target.length > 512) throw localError('InvalidCacheTarget', 'Cache tags must be 1-512 characters.');
-        return target;
-      }
-      return target;
-    });
+    normalizedTargets = targets;
     if (['purge_url', 'purge_prefix', 'purge_host'].includes(type)) {
       normalizedTargets.forEach((target) => {
         const host = cacheHost(target, type);
@@ -246,6 +267,20 @@ export async function createCachePurge(client, zoneId, { type, targets, method =
         }
       });
     }
+  }
+
+  const quotaResponse = await client.DescribeContentQuota({ ZoneId: zone.ZoneId });
+  const quota = freeTierPurgeQuotas(quotaResponse).find((item) => item.Type === type);
+  if (!quota) throw localError('UnsupportedPurgeType', `No free-tier quota is available for ${type}.`);
+  const submittedCount = type === 'purge_all' ? 1 : normalizedTargets.length;
+  if (!Number.isFinite(quota.Batch) || !Number.isFinite(quota.DailyAvailable)) {
+    throw localError('InvalidPurgeQuota', `Tencent Cloud returned incomplete quota data for ${type}.`);
+  }
+  if (submittedCount > quota.Batch) {
+    throw localError('PurgeBatchQuotaExceeded', `${type} request exceeds the current batch quota (${quota.Batch}).`);
+  }
+  if (submittedCount > quota.DailyAvailable) {
+    throw localError('PurgeDailyQuotaExceeded', `Not enough daily ${type} quota remains (${quota.DailyAvailable}).`);
   }
 
   const request = { ZoneId: zone.ZoneId, Type: type };

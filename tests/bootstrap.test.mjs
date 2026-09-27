@@ -54,6 +54,7 @@ Save-EdgeOneCredential -SecretId (New-TestSecureString '${fakeId}') -SecretKey (
     assert.deepEqual(names, [
       'edgeone_create_l7_rule',
       'edgeone_delete_l7_rules',
+      'edgeone_get_content_quota',
       'edgeone_list_l7_rules',
       'edgeone_list_purge_tasks',
       'edgeone_list_zones',
